@@ -1,14 +1,91 @@
 from fasthtml.common import *
 import random
-
+import json
 app, rt = fast_app()
+multiplication_range = range(2, 11)
+
+def get_problem_weights(request):
+    """Retrieve weights from cookies or initialize them."""
+    weights = {
+        (a, b): float(request.cookies.get(f"{a}x{b}", 1.0))
+        for a in multiplication_range for b in multiplication_range
+    }
+    return weights
+
+def select_problem(weights):
+    """Select a problem (num1, num2) based on weighted probabilities."""
+    problems, probs = zip(*weights.items())
+    num1, num2 = random.choices(problems, weights=probs, k=1)[0]
+    answer = num1 * num2
+    return num1, num2, answer
+
+def generate_problem_ui(num1, num2, answer, correct, incorrect):
+    content = Div(
+        Div(f"{correct} - {incorrect}", id="scoreboard", cls="scoreboard"),
+        Div(
+            Div(
+                Div(P(f"{num1} × {num2}", style="font-size: 3.5em; text-align: center;"), cls="card-front"),
+                Div(
+                    P(str(answer), style="font-size: 3.5em; text-align: center;"),
+                    Div(
+                        Button("✓", cls="check-button", hx_post=f"/correct?num1={num1}&num2={num2}", hx_target="#content"),
+                        Button("✗", cls="x-button", hx_post=f"/incorrect?num1={num1}&num2={num2}", hx_target="#content"),
+                        cls="button-container"
+                    ),
+                    cls="card-back"
+                ),
+                cls="card",
+                onclick="flipCard()"
+            ),
+            cls="card-container"
+        ), id="content"
+    )
+    return content
+# def generate_problem_ui(num1, num2, answer, correct, incorrect):
+#     """Generate a new problem UI as a FastHTML response."""
+#     return Div(
+#         id="content",
+#         children=[
+#             Div(f"{correct} - {incorrect}", id="scoreboard", cls="scoreboard"),
+#             Div(
+#                 Div(
+#                     Div(
+#                         P(f"{num1} × {num2}", style="font-size: 3.5em; text-align: center;"), 
+#                         cls="card-front"
+#                     ),
+#                     Div(
+#                         P(str(answer), style="font-size: 3.5em; text-align: center;", id="problem-answer"),
+#                         Div(
+#                             Button("✓", 
+#                                    cls="check-button", 
+#                                    hx_post=f"/correct?num1={num1}&num2={num2}", 
+#                                    hx_target="#content", 
+#                                    hx_swap="outerHTML"),
+#                             Button("✗", 
+#                                    cls="x-button", 
+#                                    hx_post=f"/incorrect?num1={num1}&num2={num2}", 
+#                                    hx_target="#content", 
+#                                    hx_swap="outerHTML"),
+#                             cls="button-container"
+#                         ),
+#                         cls="card-back"
+#                     ),
+#                     cls="card",
+#                     onclick="flipCard()"
+#                 ),
+#                 cls="card-container"
+#             )
+#         ]
+#     )
 
 @rt("/")
-def get():
-    # Generate random numbers for multiplication
-    num1 = random.randint(2, 10)
-    num2 = random.randint(2, 10)
-    answer = num1 * num2
+def get(request):
+    correct = int(request.cookies.get('correct', 0))
+    incorrect = int(request.cookies.get('incorrect', 0))
+
+    # get new problem
+    weights = get_problem_weights(request)
+    num1, num2, answer = select_problem(weights)
 
     # Add CSS for the flip animation and buttons
     style = """
@@ -83,28 +160,39 @@ def get():
 
     # Add JavaScript to handle the flip and generate new problem
     script = """
-        let correctScore = 0;
-        let incorrectScore = 0;
+        let correctScore = parseInt(document.cookie.match(/correct=(\d+)/)?.[1] || '0');
+        let incorrectScore = parseInt(document.cookie.match(/incorrect=(\d+)/)?.[1] || '0');
 
         function updateScore() {
             document.getElementById('scoreboard').textContent = `${correctScore} - ${incorrectScore}`;
         }
+        
+        // Initialize score on page load
+        updateScore();
 
         function flipCard() {
             const card = document.querySelector('.card');
             card.classList.toggle('flipped');
             
             // If card is being flipped back to front, fetch new problem
-            if (!card.classList.contains('flipped')) {
-                window.location.reload();
-            }
+            // if (!card.classList.contains('flipped')) {
+            //      window.location.reload();
+            // }
         }
 
         function handleAnswer(correct) {
+            const num1 = """ + str(num1) + """;
+            const num2 = """ + str(num2) + """;
             if (correct) {
                 correctScore++;
+                fetch('/correct?num1=' + num1 + '&num2=' + num2, {
+                    method: 'POST'
+                });
             } else {
                 incorrectScore++;
+                fetch('/incorrect?num1=' + num1 + '&num2=' + num2, {
+                    method: 'POST'
+                });
             }
             updateScore();
             setTimeout(flipCard, 500);  // Flip card after short delay
@@ -112,30 +200,50 @@ def get():
     """
 
     # Create the scoreboard and card structure
-    content = Div(
-        Div("0 - 0", id="scoreboard", cls="scoreboard"),
-        Div(
-            Div(
-                Div(P(f"{num1} × {num2}", style="font-size: 3.5em; text-align: center;"), cls="card-front"),
-                Div(
-                    P(str(answer), style="font-size: 3.5em; text-align: center;"),
-                    Div(
-                        Button("✓", cls="check-button", onclick="handleAnswer(true)"),
-                        Button("✗", cls="x-button", onclick="handleAnswer(false)"),
-                        cls="button-container"
-                    ),
-                    cls="card-back"
-                ),
-                cls="card",
-                onclick="flipCard()"
-            ),
-            cls="card-container"
-        )
-    )
+    content = generate_problem_ui(num1, num2, answer, correct, incorrect)
     
     return Titled("Sofia's Tablas", 
                  Style(style),  
                  Script(script), 
                  content)
+
+
+@app.post("/correct")
+def correct(request,  num1: int, num2: int):
+    # update correct scoreo
+    print(request.cookies)
+    correct = int(request.cookies.get('correct', 0)) + 1
+    incorrect = int(request.cookies.get('incorrect', 0))
+    
+    # Create a new response with updated UI
+    weights = get_problem_weights(request)
+    weights[(num1, num2)] = max(0.2, weights[(num1, num2)] * 0.8)
+    
+    # Get new problem
+    new_num1, new_num2, new_answer = select_problem(weights)
+    
+    content = generate_problem_ui(new_num1, new_num2, new_answer, correct, incorrect)
+
+    resp = Response(to_xml(content))
+    resp.set_cookie("correct", str(correct))
+    resp.set_cookie(f"{num1}x{num2}", str(weights[(num1, num2)]))
+    return resp
+
+@app.post("/incorrect")
+def incorrect(request, num1: int, num2: int):
+    correct = int(request.cookies.get('correct', 0))
+    incorrect = int(request.cookies.get('incorrect', 0)) + 1
+    
+    weights = get_problem_weights(request)
+    weights[(num1, num2)] = min(10.0, weights[(num1, num2)] * 2.4)  # Increase weight (max 5)
+    new_num1, new_num2, new_answer = select_problem(weights)
+
+    content = generate_problem_ui(new_num1, new_num2, new_answer, correct, incorrect)
+    resp = Response(to_xml(content))
+    resp.set_cookie("correct", str(correct))
+    resp.set_cookie("incorrect", str(incorrect))
+    resp.set_cookie(f"{num1}x{num2}", str(weights[(num1, num2)]))
+    return resp
+
 
 serve()
