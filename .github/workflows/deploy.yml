@@ -17,4 +17,4 @@ jobs:
         script: |
           cd /home/chase/tablas
           git pull
-          sudo systemctl restart fasthtml
+          sudo -n systemctl restart fasthtml
