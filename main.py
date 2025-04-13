@@ -1,27 +1,63 @@
 from fasthtml.common import *
 import random
-import json
 app, rt = fast_app()
-multiplication_range = range(2, 11)
+
+MAX_TABLE = 10
+multiplication_range = range(2, MAX_TABLE + 1)
 
 def get_problem_weights(request):
     """Retrieve weights from cookies or initialize them."""
-    weights = {
-        (a, b): float(request.cookies.get(f"{a}x{b}", 1.0))
-        for a in multiplication_range for b in multiplication_range
-    }
+    weights = {}
+    for a in multiplication_range:
+        for b in multiplication_range:
+            # Sort factors to ensure a ≤ b so that 2×5 and 5×2 are treated as the same
+            min_factor, max_factor = sorted([a, b])
+            key = f"{min_factor}x{max_factor}"
+            if key not in weights:
+                weights[(min_factor, max_factor)] = float(request.cookies.get(key, 1.0))
     return weights
+
+def set_problem_weight(response, num1, num2, weight):
+    """Save a problem weight to cookies with sorted factors."""
+    min_factor, max_factor = sorted([num1, num2])
+    response.set_cookie(f"{min_factor}x{max_factor}", str(weight))
+    return response
 
 def select_problem(weights):
     """Select a problem (num1, num2) based on weighted probabilities."""
     problems, probs = zip(*weights.items())
-    num1, num2 = random.choices(problems, weights=probs, k=1)[0]
+    min_factor, max_factor = random.choices(problems, weights=probs, k=1)[0]
+    
+    # Randomly decide whether to show min_factor × max_factor or max_factor × min_factor
+    if random.choice([True, False]) and min_factor != max_factor:
+        num1, num2 = max_factor, min_factor
+    else:
+        num1, num2 = min_factor, max_factor
+        
     answer = num1 * num2
     return num1, num2, answer
 
-def generate_problem_ui(num1, num2, answer, correct, incorrect):
+
+def get_total_problems():
+    return int(len(multiplication_range) * (len(multiplication_range) + 1) / 2)  # 9x9 distinct problems (including symmetric ones only once)
+
+def get_problems_left_to_learn(request):
+    """Calculate the number of problems left to learn (weight < 0.3)."""
+    total_problems = get_total_problems()
+    weights = get_problem_weights(request)
+    
+    mastered = sum(1 for (_, _), weight in weights.items() if weight < 0.6)
+    return total_problems - mastered
+
+def generate_problem_ui(num1, num2, answer, correct, incorrect, left_to_learn):
+    total_problems = get_total_problems()
     content = Div(
-        Div(f"{correct} - {incorrect}", id="scoreboard", cls="scoreboard"),
+        Div(
+            Span(f"{correct} - {incorrect}", cls="score-text"),
+            Button("Report", id="report-button", cls="report-button", onclick="showTopProblems()"),
+            id="scoreboard", cls="scoreboard", style="display: none;"  # Hide the scoreboard
+        ),
+        Div(id="top-problems", cls="top-problems"),
         Div(
             Div(
                 Div(P(f"{num1} × {num2}", style="font-size: 3.5em; text-align: center;"), cls="card-front"),
@@ -38,50 +74,17 @@ def generate_problem_ui(num1, num2, answer, correct, incorrect):
                 onclick="flipCard()"
             ),
             cls="card-container"
-        ), id="content"
+        ),
+        Div(f"Left to learn: {left_to_learn}/{total_problems}", cls="learn-counter"),
+        id="content"
     )
     return content
-# def generate_problem_ui(num1, num2, answer, correct, incorrect):
-#     """Generate a new problem UI as a FastHTML response."""
-#     return Div(
-#         id="content",
-#         children=[
-#             Div(f"{correct} - {incorrect}", id="scoreboard", cls="scoreboard"),
-#             Div(
-#                 Div(
-#                     Div(
-#                         P(f"{num1} × {num2}", style="font-size: 3.5em; text-align: center;"), 
-#                         cls="card-front"
-#                     ),
-#                     Div(
-#                         P(str(answer), style="font-size: 3.5em; text-align: center;", id="problem-answer"),
-#                         Div(
-#                             Button("✓", 
-#                                    cls="check-button", 
-#                                    hx_post=f"/correct?num1={num1}&num2={num2}", 
-#                                    hx_target="#content", 
-#                                    hx_swap="outerHTML"),
-#                             Button("✗", 
-#                                    cls="x-button", 
-#                                    hx_post=f"/incorrect?num1={num1}&num2={num2}", 
-#                                    hx_target="#content", 
-#                                    hx_swap="outerHTML"),
-#                             cls="button-container"
-#                         ),
-#                         cls="card-back"
-#                     ),
-#                     cls="card",
-#                     onclick="flipCard()"
-#                 ),
-#                 cls="card-container"
-#             )
-#         ]
-#     )
 
 @rt("/")
 def get(request):
     correct = int(request.cookies.get('correct', 0))
     incorrect = int(request.cookies.get('incorrect', 0))
+    left_to_learn = get_problems_left_to_learn(request)
 
     # get new problem
     weights = get_problem_weights(request)
@@ -155,6 +158,61 @@ def get(request):
             padding: 10px 20px;
             border-radius: 10px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .score-text {
+            margin-right: 5px;
+        }
+        .report-button {
+            padding: 4px 10px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 0.6em;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .report-button:hover {
+            background-color: #0b7dda;
+        }
+        .top-problems {
+            position: fixed;
+            top: 70px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            display: none;
+            font-size: 1.2em;
+            max-width: 200px;
+        }
+        .top-problems h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .top-problems ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .top-problems li {
+            margin-bottom: 5px;
+        }
+        .learn-counter {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px 15px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-size: 1.3em;
+            text-align: center;
         }
     """
 
@@ -164,7 +222,7 @@ def get(request):
         let incorrectScore = parseInt(document.cookie.match(/incorrect=(\d+)/)?.[1] || '0');
 
         function updateScore() {
-            document.getElementById('scoreboard').textContent = `${correctScore} - ${incorrectScore}`;
+            document.querySelector('.score-text').textContent = `${correctScore} - ${incorrectScore}`;
         }
         
         // Initialize score on page load
@@ -197,10 +255,59 @@ def get(request):
             updateScore();
             setTimeout(flipCard, 500);  // Flip card after short delay
         }
+
+        function showTopProblems() {
+            const topProblemsDiv = document.getElementById('top-problems');
+            
+            // If already showing, just toggle off and return
+            if (topProblemsDiv.style.display === 'block') {
+                topProblemsDiv.style.display = 'none';
+                return;
+            }
+            
+            // Show loading state
+            topProblemsDiv.innerHTML = '<p>Loading...</p>';
+            topProblemsDiv.style.display = 'block';
+            
+            // Fetch top problems
+            fetch('/top_problems')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.length === 0) {
+                        topProblemsDiv.innerHTML = '<h3>Great job!</h3><p>No difficult problems found.</p>';
+                        return;
+                    }
+                    
+                    let html = '<h3>Problems to Practice</h3><ul>';
+                    
+                    data.forEach(item => {
+                        html += `<li>${item.problem}</li>`;
+                    });
+                    
+                    html += '</ul>';
+                    topProblemsDiv.innerHTML = html;
+                })
+                .catch(error => {
+                    topProblemsDiv.innerHTML = '<p>Error loading problems</p>';
+                    console.error('Error:', error);
+                });
+        }
+        
+        // Hide top problems when clicking outside
+        document.addEventListener('click', function(event) {
+            const topProblemsDiv = document.getElementById('top-problems');
+            const reportButton = document.getElementById('report-button');
+            
+            if (event.target !== topProblemsDiv && 
+                !topProblemsDiv.contains(event.target) && 
+                event.target !== reportButton) {
+                topProblemsDiv.style.display = 'none';
+            }
+        });
     """
 
     # Create the scoreboard and card structure
-    content = generate_problem_ui(num1, num2, answer, correct, incorrect)
+    content = generate_problem_ui(num1, num2, answer, correct, incorrect, left_to_learn)
     
     return Titled("Sofia's Tablas", 
                  Style(style),  
@@ -209,24 +316,27 @@ def get(request):
 
 
 @app.post("/correct")
-def correct(request,  num1: int, num2: int):
-    # update correct scoreo
-    print(request.cookies)
+def correct(request, num1: int, num2: int):
+    # update correct score
     correct = int(request.cookies.get('correct', 0)) + 1
     incorrect = int(request.cookies.get('incorrect', 0))
     
     # Create a new response with updated UI
     weights = get_problem_weights(request)
-    weights[(num1, num2)] = max(0.2, weights[(num1, num2)] * 0.8)
+    min_factor, max_factor = sorted([num1, num2])
+    weights[(min_factor, max_factor)] = max(0.2, weights[(min_factor, max_factor)] * 0.5)
     
     # Get new problem
     new_num1, new_num2, new_answer = select_problem(weights)
     
-    content = generate_problem_ui(new_num1, new_num2, new_answer, correct, incorrect)
+    # Calculate left to learn
+    left_to_learn = get_problems_left_to_learn(request)
+    
+    content = generate_problem_ui(new_num1, new_num2, new_answer, correct, incorrect, left_to_learn)
 
     resp = Response(to_xml(content))
     resp.set_cookie("correct", str(correct))
-    resp.set_cookie(f"{num1}x{num2}", str(weights[(num1, num2)]))
+    resp = set_problem_weight(resp, num1, num2, weights[(min_factor, max_factor)])
     return resp
 
 @app.post("/incorrect")
@@ -235,15 +345,38 @@ def incorrect(request, num1: int, num2: int):
     incorrect = int(request.cookies.get('incorrect', 0)) + 1
     
     weights = get_problem_weights(request)
-    weights[(num1, num2)] = min(10.0, weights[(num1, num2)] * 2.4)  # Increase weight (max 5)
+    min_factor, max_factor = sorted([num1, num2])
+    weights[(min_factor, max_factor)] = min(10.0, weights[(min_factor, max_factor)] * 2.4)  # Increase weight (max 10)
     new_num1, new_num2, new_answer = select_problem(weights)
 
-    content = generate_problem_ui(new_num1, new_num2, new_answer, correct, incorrect)
+    # Calculate left to learn
+    left_to_learn = get_problems_left_to_learn(request)
+    
+    content = generate_problem_ui(new_num1, new_num2, new_answer, correct, incorrect, left_to_learn)
     resp = Response(to_xml(content))
     resp.set_cookie("correct", str(correct))
     resp.set_cookie("incorrect", str(incorrect))
-    resp.set_cookie(f"{num1}x{num2}", str(weights[(num1, num2)]))
+    resp = set_problem_weight(resp, num1, num2, weights[(min_factor, max_factor)])
     return resp
 
+@app.get("/top_problems")
+def top_problems(request):
+    """Return problems with weights > 1."""
+    weights = get_problem_weights(request)
+    
+    # Filter problems with weight > 1 and sort by weight in descending order
+    hard_problems = [(key, weight) for key, weight in weights.items() if weight > 1]
+    sorted_problems = sorted(hard_problems, key=lambda x: x[1], reverse=True)
+    
+    # Format the problems
+    result = []
+    for (min_factor, max_factor), weight in sorted_problems:
+        result.append({
+            "problem": f"{min_factor}×{max_factor}",
+            "weight": weight
+        })
+    
+    # Return as JSON
+    return JSONResponse(result)
 
 serve()
