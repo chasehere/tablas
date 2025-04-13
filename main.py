@@ -2,7 +2,7 @@ from fasthtml.common import *
 import random
 app, rt = fast_app()
 
-MAX_TABLE = 10
+MAX_TABLE = 12
 multiplication_range = range(2, MAX_TABLE + 1)
 
 def get_problem_weights(request):
